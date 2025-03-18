@@ -4,11 +4,11 @@
 
 CSM（Conversational Speech Model 会话语音模型）, 多人会话, 克隆声音, 然后可根据会话中语音的情绪变化等, 生成相应情绪变化的语音的模型. 遗憾的是目前只有英文可用. 该节点, 暂时支持同时 10 人会话.
 
-![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_15-38-45.png)
+![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_19-01-15.png)
 
 可以将录音节点穿插在其中, 进行多人会话.
 
-![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_19-01-15.png)
+![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_15-38-45.png)
 
 还支持音频水印检测(自动检测水印) 和 音频添加加密水印.
 
@@ -19,6 +19,8 @@ CSM（Conversational Speech Model 会话语音模型）, 多人会话, 克隆声
 [2025-03-18]⚒️: 发布版本 v1.0.0. 
 
 节点使用方法详解示例工作流: [example_workflows](https://github.com/billwuhao/ComfyUI_CSM/blob/master/example_workflows)
+
+提示词 `prompt` 前面必须是 `0~9` 的数字, 并且有 `:` 或 `：` 号分隔. 提示词和音频需要一一对应, 例如 `prompt1` 对应 `audio1`.
 
 ## 安装
 
