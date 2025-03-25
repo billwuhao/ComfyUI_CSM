@@ -27,25 +27,32 @@ class AddWatermark:
     def INPUT_TYPES(s):
         return {"required": {
                     "audio": ("AUDIO",),
-                    "add_watermark": ("BOOLEAN", {"default": False, "tooltip": "Add watermark or not."}),
-                    "key": ("STRING", {"default": "[212, 211, 146, 56, 201]", "tooltip": "List of integers such as [212, 211, 146, 56, 201]"}),
-                    },
+                    "add_watermark": ("BOOLEAN", {
+                        "default": False, 
+                        "tooltip": "Enable audio watermark embedding"
+                    }),
+                    "key": ("STRING", {
+                        "default": "[212, 211, 146, 56, 201]", 
+                        "tooltip": "Encryption key as list of integers (e.g. [212,211,146,56,201])"
+                    }),
+                    }
                 # "optional": {
                 #     "check_watermark": ("BOOLEAN", {"default": False, "tooltip": "Check if the audio contains watermark."}),
                 #     }
                 }
 
 
-    CATEGORY = "MW_CSM"
+    CATEGORY = "🎤MW/MW-CSM"
     RETURN_TYPES = ("AUDIO", "STRING")
     RETURN_NAMES = ("audio", "watermark")
     FUNCTION = "watermarkgen"
 
 
     def watermarkgen(self, audio, add_watermark, key):
+        """Main watermark processing pipeline"""
         watermarker = self.load_watermarker(device=self.device)
         audio_array, sample_rate = self.load_audio(audio)
-        # 确保 audio_array 在正确的设备上
+        # Ensure tensor on correct device
         audio_array = audio_array.to(self.device)
 
         if add_watermark:
@@ -54,7 +61,7 @@ class AddWatermark:
 
         watermark = self.verify(watermarker, audio_array, sample_rate)
         
-        # 返回前将音频数据移回 CPU
+        # Move data back to CPU before return
         return ({"waveform": audio_array.unsqueeze(0).unsqueeze(0).cpu(), "sample_rate": sample_rate}, watermark)
 
     @torch.inference_mode()
@@ -64,7 +71,7 @@ class AddWatermark:
         sample_rate: int,
         watermark_key: list[int],
     ) -> tuple[torch.Tensor, int]:
-        # 确保音频是单声道
+        # Ensure mono channel
         if len(audio_array.shape) > 1 and audio_array.shape[0] > 1:
             audio_array = audio_array.mean(dim=0)
         
@@ -76,13 +83,13 @@ class AddWatermark:
             new_freq=44100
         ).to(self.device)
         
-        # 确保音频形状正确 (应为一维张量)
+        # Ensure correct tensor shape (should be 1D)
         if len(audio_array_44khz.shape) != 1:
             audio_array_44khz = audio_array_44khz.reshape(-1)
             
         
         try:
-            # 增加水印强度，降低message_sdr值使水印更明显
+            # Enhance watermark strength by reducing SDR threshold
             encoded, _ = watermarker.encode_wav(audio_array_44khz, 44100, watermark_key, calc_sdr=False, message_sdr=30)
             
             verify_result = watermarker.decode_wav(encoded, 44100, phase_shift_decoding=True)
@@ -93,7 +100,7 @@ class AddWatermark:
         except Exception as e:
             return audio_array, sample_rate
 
-        # 如果需要，重采样回原始采样率
+        # Resample back to original rate if needed
         output_sample_rate = min(44100, sample_rate)
         if output_sample_rate != 44100:
             encoded = torchaudio.functional.resample(
@@ -157,20 +164,22 @@ class AddWatermark:
 
 
     def _parse_key(self, key_string):
-        """Helper function to safely parse the key."""
+        """Safely parse encryption key from string
+        Args:
+            key_string: String representation of key list
+        Returns:
+            List[int]: Parsed key sequence
+        """
         try:
-            key = ast.literal_eval(key_string)
-            return key
+            return ast.literal_eval(key_string)
         except (ValueError, SyntaxError) as e:
-            raise
+            raise ValueError(f"Invalid key format: {str(e)}")
 
 
     def load_audio(self, audio) -> tuple[torch.Tensor, int]:
         waveform = audio["waveform"].squeeze(0)
         audio_array = waveform.mean(dim=0)
-
         sample_rate = audio["sample_rate"]
-
         return audio_array, int(sample_rate)
 
 
@@ -185,7 +194,7 @@ SEGMENTS = []
 SPEAKERS = []
     
 class Generator:
-    # 添加类变量用于缓存
+    # cached models
     _cached_llama3_tokenizer = None
     _cached_mimi = None
 
@@ -344,7 +353,7 @@ class MultiLinePromptCSM:
                 },
         }
 
-    CATEGORY = "MW_CSM"
+    CATEGORY = "🎤MW/MW-CSM"
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("prompt",)
     FUNCTION = "promptgen"
@@ -354,16 +363,6 @@ class MultiLinePromptCSM:
 
 
 class CSMDialogRun:
-    # 添加类变量用于缓存
-    _cached_csm_1b = None
-    _cached_generator = None
-
-    if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -379,25 +378,39 @@ class CSMDialogRun:
                     "audio1": ("AUDIO",),
                     "audio2": ("AUDIO",),
                     "audio3": ("AUDIO",),
-                    "who_will_speak": ("INT", {"default": 0, "min": 0, "max": 9, "step": 1,}),
+                    "who_will_speak": ("INT", {
+                        "default": 0, 
+                        "min": 0, 
+                        "max": 9, 
+                        "step": 1
+                    }),
                     }
                 }
 
 
-    CATEGORY = "MW_CSM"
+    CATEGORY = "🎤MW/MW-CSM"
     RETURN_TYPES = ("AUDIO", "STRING")
     RETURN_NAMES = ("audio", "prompt")
     FUNCTION = "run"
 
 
     def run(self, text, unload_speakers, prompt0="", prompt1="", prompt2="", prompt3="", audio0=None, audio1=None, audio2=None, audio3=None, who_will_speak=1):
+        """Main dialog generation pipeline
+        Args:
+            text: Input text to be synthesized
+            unload_speakers: Flag to clear speaker history
+            prompt0-3: Context prompts for dialogue generation
+            audio0-3: Reference audio clips for speaker style
+            who_will_speak: Selected speaker ID for synthesis
+        """
         generator = self.load_csm_1b()
         global SEGMENTS, SPEAKERS
         if unload_speakers:
             SEGMENTS.clear()
             SPEAKERS.clear()
+            
+        # Process context inputs
         segments = []
-
         for i in range(4):
             prompt = locals()[f"prompt{i}"]
             audio = locals()[f"audio{i}"]
@@ -422,30 +435,24 @@ class CSMDialogRun:
                 SPEAKERS.append(speaker)
         
         if SEGMENTS:
-            SEGMENTS.extend(segments)
-            if len(SEGMENTS) > 6:
-                SEGMENTS = SEGMENTS[-6:]
-                SPEAKERS = SPEAKERS[-6:]
-            if who_will_speak not in SPEAKERS:
-                raise ValueError(f"The speaker {who_will_speak} not found or cleared, up to 6 recent speakers saved.")
-
-            # print(f"使用 {len(segments)} 个上下文段落生成音频，说话者: {will_speaker}")
+            # Generate with context
             audio = generator.generate(
-                                    text=text,
-                                    speaker=who_will_speak,
-                                    context=SEGMENTS,
-                                    max_audio_length_ms=10_000,
-                                )
-            out_prompt = str(who_will_speak) + ": " + text
+                text=text,
+                speaker=who_will_speak,
+                context=SEGMENTS,
+                max_audio_length_ms=10_000,
+            )
+            out_prompt = f"{who_will_speak}: {text}"
         else:
-            # print(f"无上下文生成音频，说话者: 0")
+            # Generate without context
             audio = generator.generate(
-                                    text=text,
-                                    speaker=0,
-                                    context=[],
-                                    max_audio_length_ms=10_000,
-                                )
-            out_prompt = "0: " + text
+                text=text,
+                speaker=0,
+                context=[],
+                max_audio_length_ms=10_000,
+            )
+            out_prompt = f"0: {text}"
+            
         return ({"waveform": audio.unsqueeze(0).unsqueeze(0).cpu(), "sample_rate": generator.sample_rate}, out_prompt)
 
     def get_speaker_text(self, text):
