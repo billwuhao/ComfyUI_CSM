@@ -484,9 +484,9 @@ class CSMDialogRun:
             csm_1b_path = os.path.join(models_dir, "TTS", "csm-1b")
             config_path = os.path.join(csm_1b_path, "config.json")
             import json
-            with open(config_path, 'r') as f:
-                config = json.load(f)["args"]
-
+            with open(config_path, 'r', encoding="utf-8") as f:
+                config = json.load(f)
+            config = config["args"]
             configs = ModelArgs(backbone_flavor = config["backbone_flavor"], 
                                 decoder_flavor = config["decoder_flavor"], 
                                 text_vocab_size = config["text_vocab_size"], 
