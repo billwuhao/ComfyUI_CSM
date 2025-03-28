@@ -1,7 +1,7 @@
 [project]
 name = "csm_mw"
 description = "ComfyUI node of Conversational Speech Model (CSM)."
-version = "1.0.1"
+version = "1.0.2"
 license = {file = "LICENSE"}
 
 [project.urls]
