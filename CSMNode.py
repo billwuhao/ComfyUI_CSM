@@ -17,14 +17,16 @@ import folder_paths
 models_dir = folder_paths.models_dir
 
 class AddWatermark:
-    if torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
+    def __init__(self):
+        if torch.backends.mps.is_available():
+            device = "mps"
+        elif torch.cuda.is_available():
+            device = "cuda"
+        else:
+            device = "cpu"
+        self.device = device
+        self.cached_model = None
 
-    cached_model = None
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
@@ -38,13 +40,11 @@ class AddWatermark:
                         "tooltip": "Encryption key as list of integers (e.g. [212,211,146,56,201])"
                     }),
                     "unload_model": ("BOOLEAN", {
-                        "default": False,
+                        "default": True,
                         "tooltip": "Unload model from memory after use"
                     })
-                    }
-                # "optional": {
-                #     "check_watermark": ("BOOLEAN", {"default": False, "tooltip": "Check if the audio contains watermark."}),
-                #     }
+                    },
+                "optional": {}
                 }
 
 
@@ -55,7 +55,19 @@ class AddWatermark:
 
     def watermarkgen(self, audio, add_watermark, key, unload_model):
         """Main watermark processing pipeline"""
-        watermarker = self.load_watermarker(device=self.device, use_cache=True)
+        ckpt_path = os.path.join(models_dir, "TTS", "SilentCipher", "44_1_khz", "73999_iteration")
+        config_path = os.path.join(models_dir, ckpt_path, "hparams.yaml")
+
+        if self.cached_model is None:
+            self.cached_model = silentcipher.get_model(
+                model_type="44.1k", 
+                ckpt_path=ckpt_path, 
+                config_path=config_path,
+                device=self.device,
+            )
+        
+        watermarker = self.cached_model
+
         audio_array, sample_rate = self.load_audio(audio)
         # Ensure tensor on correct device
         audio_array = audio_array.to(self.device)
@@ -65,6 +77,7 @@ class AddWatermark:
             audio_array, sample_rate = self.watermark(watermarker, audio_array, sample_rate, key)
 
         watermark = self.verify(watermarker, audio_array, sample_rate)
+        
         if unload_model:
             del watermarker
             self.cached_model = None
@@ -157,27 +170,6 @@ class AddWatermark:
             watermark = "No watermarked"
 
         return watermark
-
-
-    def load_watermarker(self, device: str = "cuda", use_cache = True) -> silentcipher.server.Model:
-        ckpt_path = os.path.join(models_dir, "TTS", "SilentCipher", "44_1_khz", "73999_iteration")
-        config_path = os.path.join(models_dir, ckpt_path, "hparams.yaml")
-
-        if not use_cache and self.cached_model is not None:
-            return self.cached_model
-        else:
-            model = silentcipher.get_model(
-                model_type="44.1k", 
-                ckpt_path=ckpt_path, 
-                config_path=config_path,
-                device=device,
-            )
-            self.cached_model = model
-            del model
-            torch.cuda.empty_cache()
-            
-        return self.cached_model
-
 
     def _parse_key(self, key_string):
         """Safely parse encryption key from string
@@ -378,16 +370,17 @@ class MultiLinePromptCSM:
 
 
 class CSMDialogRun:
-    csm_1b_cached_model = None
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.csm_1b_cached_model = None
 
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
-                    "text": ("STRING",),
+                    "text": ("STRING",{"forceInput": True}),
                     "unload_speakers": ("BOOLEAN",{ "default": False}),
                     "unload_model": ("BOOLEAN", {
-                            "default": False,
+                            "default": True,
                             "tooltip": "Unload model from memory after use"
                     }),
                     },
@@ -518,7 +511,7 @@ class CSMDialogRun:
         if unload_model:
             generator.clean_memory()
             del generator
-            CSMDialogRun.csm_1b_cached_model = None
+            self.csm_1b_cached_model = None
             import gc
             gc.collect()
             torch.cuda.empty_cache()
@@ -547,8 +540,8 @@ class CSMDialogRun:
             return None
 
     def load_csm_1b(self):
-        if CSMDialogRun.csm_1b_cached_model is not None:
-            return CSMDialogRun.csm_1b_cached_model
+        if self.csm_1b_cached_model is not None:
+            return self.csm_1b_cached_model
         else:
             csm_1b_path = os.path.join(models_dir, "TTS", "csm-1b")
             config_path = os.path.join(csm_1b_path, "config.json")
@@ -561,15 +554,10 @@ class CSMDialogRun:
                                 text_vocab_size = config["text_vocab_size"], 
                                 audio_vocab_size = config["audio_vocab_size"], 
                                 audio_num_codebooks = config["audio_num_codebooks"])
-            model = Model.from_pretrained(csm_1b_path, config=configs)
-            model.to(device=self.device, dtype=torch.bfloat16)
-            CSMDialogRun.csm_1b_cached_model = model
-            del model
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
+            self.csm_1b_cached_model = Model.from_pretrained(csm_1b_path, config=configs)
+            self.csm_1b_cached_model.to(device=self.device, dtype=torch.bfloat16)
 
-            return CSMDialogRun.csm_1b_cached_model
+            return self.csm_1b_cached_model
 
 from .MWAudioRecorderCSM import AudioRecorderCSM
 

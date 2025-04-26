@@ -12,8 +12,6 @@ class AudioRecorderCSM:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                # Trigger control
-                "trigger": ("BOOLEAN", {"default": False}),
                 # Recording duration
                 "record_sec": ("INT", {
                     "default": 5,
@@ -49,6 +47,8 @@ class AudioRecorderCSM:
             },
             "optional": {
                 "interlocutor": ("AUDIO",),
+                # Trigger control
+                "enable": ("BOOLEAN", {"default": False}),
             },
         }
 

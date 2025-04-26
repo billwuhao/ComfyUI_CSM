@@ -1,7 +1,7 @@
 [project]
 name = "csm_mw"
 description = "ComfyUI node of Conversational Speech Model (CSM)."
-version = "1.0.2"
+version = "1.0.3"
 license = {file = "LICENSE"}
 
 [project.urls]
@@ -11,4 +11,4 @@ Repository = "https://github.com/billwuhao/ComfyUI_CSM"
 [tool.comfy]
 PublisherId = "mw"
 DisplayName = "ComfyUI_CSM"
-Icon = "https://github.com/billwuhao/aiart.website/blob/master/hb.png"
+Icon = ""
