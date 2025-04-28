@@ -6,7 +6,7 @@ import torch
 import torchaudio
 import os
 
-from huggingface_hub import hf_hub_download
+# from huggingface_hub import hf_hub_download
 from .models import Model, ModelArgs
 from moshi.models import loaders
 from tokenizers.processors import TemplateProcessing
