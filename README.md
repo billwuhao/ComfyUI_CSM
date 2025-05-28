@@ -2,21 +2,30 @@
 
 # ComfyUI Node for CSM
 
-CSM (Conversational Speech Model), a model that supports multi-person conversations, voice cloning, and generates speech with corresponding emotional changes based on the emotional changes in the conversation. Unfortunately, it is currently only available in English. This node temporarily supports simultaneous conversations with up to 10 people.
+CSM（Conversational Speech Model）, Clone voice, multi person conversation. Temporarily supports two person conversations.
 
-![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_19-01-15.png)
+## 📣 Update
 
-Recording nodes can be interspersed within to create multi-person conversations.
+[2025-05-29]⚒️: Re implement the core dialogue function.
 
+[2025-03-18]⚒️: v1.0.0. 
+
+## Preview
+
+- The prompt and text format must be as follows:
+```
+[S1] Hi, how are you.
+[S2] Fine, thank you, and you?
+[S1] I'm fine, too.
+[S2] What are you planning to do?
+```
+
+- Clone voice conversation and save speaker:
 ![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_15-38-45.png)
 
-## 📣 Updates
+- Load saved speakers:
+![](https://github.com/billwuhao/ComfyUI_CSM/blob/master/images/2025-03-18_19-01-15.png)
 
-[2025-03-18]⚒️: Released version v1.0.0.
-
-Detailed node usage example workflows: [example_workflows](https://github.com/billwuhao/ComfyUI_CSM/blob/master/example_workflows)
-
-The `prompt` must be preceded by a number from `0~9`, and separated by a `:` or `：`.  Prompts and audio need to correspond one-to-one, for example, `prompt1` corresponds to `audio1`.
 
 ## Installation
 

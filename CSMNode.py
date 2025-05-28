@@ -3,6 +3,8 @@ from typing import List, Tuple
 import torch
 import torchaudio
 import os
+import json
+import safetensors.torch
 
 # from huggingface_hub import hf_hub_download
 from .models import Model, ModelArgs
@@ -13,7 +15,7 @@ import folder_paths
 
 
 models_dir = folder_paths.models_dir
-
+speakers_dir = os.path.join(models_dir, "TTS", "speakers", "dialogue_speakers")
 
 @dataclass
 class Segment:
@@ -21,9 +23,6 @@ class Segment:
     text: str
     # (num_samples,), sample_rate = 24_000
     audio: torch.Tensor
-
-SEGMENTS = []
-SPEAKERS = []
     
 class Generator:
     def __init__(
@@ -31,20 +30,20 @@ class Generator:
         model: Model,
         device: str = "cuda",
     ):
-        self._model = model
-        self._model.setup_caches(1)
+        self.model = model
+        self.model.setup_caches(1)
         self.device = device
 
-        self._text_tokenizer = self.load_llama3_tokenizer()
+        self.text_tokenizer = self.load_llama3_tokenizer()
 
         mimi = self.load_mimi()
-        self._audio_tokenizer = mimi
+        self.audio_tokenizer = mimi
         self.sample_rate = mimi.sample_rate
 
     def clean_memory(self):
-        self._model = None
-        self._text_tokenizer = None
-        self._audio_tokenizer = None
+        self.model = None
+        self.text_tokenizer = None
+        self.audio_tokenizer = None
         self.sample_rate = None
         import gc
         gc.collect()
@@ -77,7 +76,7 @@ class Generator:
         frame_tokens = []
         frame_masks = []
 
-        text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
+        text_tokens = self.text_tokenizer.encode(f"[{speaker}]{text}")
         text_frame = torch.zeros(len(text_tokens), 33).long()
         text_frame_mask = torch.zeros(len(text_tokens), 33).bool()
         text_frame[:, -1] = torch.tensor(text_tokens)
@@ -94,7 +93,7 @@ class Generator:
 
         # (K, T)
         audio = audio.to(self.device)
-        audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
+        audio_tokens = self.audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
         # add EOS frame
         eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
         audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
@@ -122,54 +121,72 @@ class Generator:
     @torch.inference_mode()
     def generate(
         self,
-        text: str,
-        speaker: int,
+        texts: List[str],
+        speakers: List[int],
         context: List[Segment],
         max_audio_length_ms: float = 90_000,
         temperature: float = 0.9,
         topk: int = 50,
     ) -> torch.Tensor:
-        self._model.reset_caches()
 
-        max_audio_frames = int(max_audio_length_ms / 80)
-        tokens, tokens_mask = [], []
-        for segment in context:
-            segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
-            tokens.append(segment_tokens)
-            tokens_mask.append(segment_tokens_mask)
+        all_generated_audio = []
 
-        gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(text, speaker)
-        tokens.append(gen_segment_tokens)
-        tokens_mask.append(gen_segment_tokens_mask)
+        for i in range(len(texts)):
+            current_text = texts[i]
+            current_speaker = speakers[i]
 
-        prompt_tokens = torch.cat(tokens, dim=0).long().to(self.device)
-        prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool().to(self.device)
+            self.model.reset_caches()
 
-        samples = []
-        curr_tokens = prompt_tokens.unsqueeze(0)
-        curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
-        curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
+            max_audio_frames = int(max_audio_length_ms / 80)
+            tokens, tokens_mask = [], []
+            for segment in context:
+                segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
+                tokens.append(segment_tokens)
+                tokens_mask.append(segment_tokens_mask)
 
-        max_seq_len = 2048 - max_audio_frames
-        if curr_tokens.size(1) >= max_seq_len:
-            raise ValueError(f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}")
+            gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(current_text, current_speaker)
+            tokens.append(gen_segment_tokens)
+            tokens_mask.append(gen_segment_tokens_mask)
 
-        for _ in range(max_audio_frames):
-            sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
-            if torch.all(sample == 0):
-                break  # eos
+            prompt_tokens = torch.cat(tokens, dim=0).long().to(self.device)
+            prompt_tokens_mask = torch.cat(tokens_mask, dim=0).bool().to(self.device)
 
-            samples.append(sample)
+            samples = []
+            curr_tokens = prompt_tokens.unsqueeze(0)
+            curr_tokens_mask = prompt_tokens_mask.unsqueeze(0)
+            curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
-            curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
-            curr_tokens_mask = torch.cat(
-                [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
-            ).unsqueeze(1)
-            curr_pos = curr_pos[:, -1:] + 1
+            max_seq_len = 2048 - max_audio_frames
+            if curr_tokens.size(1) >= max_seq_len:
+                # Potentially skip this audio or handle error differently if one segment is too long
+                print(f"Warning: Input for text '{current_text}' is too long and will be skipped.")
+                continue # Or raise ValueError
 
-        audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
+            for _ in range(max_audio_frames):
+                sample = self.model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+                if torch.all(sample == 0):
+                    break  # eos
 
-        return audio
+                samples.append(sample)
+
+                curr_tokens = torch.cat([sample, torch.zeros(1, 1).long().to(self.device)], dim=1).unsqueeze(1)
+                curr_tokens_mask = torch.cat(
+                    [torch.ones_like(sample).bool(), torch.zeros(1, 1).bool().to(self.device)], dim=1
+                ).unsqueeze(1)
+                curr_pos = curr_pos[:, -1:] + 1
+            
+            if samples:
+                audio_segment = self.audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
+                all_generated_audio.append(audio_segment)
+            else:
+                print(f"Warning: No audio samples generated for text '{current_text}'.")
+
+        if not all_generated_audio:
+            return torch.empty(0).to(self.device) 
+
+        final_audio = torch.cat(all_generated_audio, dim=0) 
+
+        return final_audio
 
 
 class MultiLinePromptCSM:
@@ -192,6 +209,7 @@ class MultiLinePromptCSM:
     def promptgen(self, multi_line_prompt: str):
         return (multi_line_prompt.strip(),)
 
+
 MODEL_CACHE = None
 class CSMDialogRun:
     def __init__(self):
@@ -200,30 +218,23 @@ class CSMDialogRun:
     @classmethod
     def INPUT_TYPES(s):
         return {"required": {
-                    "text": ("STRING",{"forceInput": True}),
-                    "unload_speakers": ("BOOLEAN",{ "default": False}),
-                    "unload_model": ("BOOLEAN", {
-                            "default": True,
-                            "tooltip": "Unload model from memory after use"
-                    }),
-                    },
-                "optional": {
-                    "prompt0": ("STRING",),
-                    "prompt1": ("STRING",),
-                    "prompt2": ("STRING",),
-                    "prompt3": ("STRING",),
-                    "audio0": ("AUDIO",),
-                    "audio1": ("AUDIO",),
-                    "audio2": ("AUDIO",),
-                    "audio3": ("AUDIO",),
-                    "who_will_speak": ("INT", {
-                        "default": 0, 
-                        "min": 0, 
-                        "max": 9, 
-                        "step": 1
-                    }),
+                    "model": (["model.safetensors", 
+                               "chinese_model.safetensors", 
+                               "model_bf16.safetensors", 
+                               "model_fp16.safetensors", 
+                               "model_int8.safetensors", 
+                               "model_uint8.safetensors",
+                               ], 
+                               {"default": "model.safetensors"}
+                    ),
+                    "text": ("STRING", {"forceInput": True}),
+                    "prompt": ("STRING",  {
+                        "multiline": True, 
+                        "default": ""}),
+                    "audio_s1": ("AUDIO",),
+                    "audio_s2": ("AUDIO",),
                     "max_audio_length_ms": ("INT", {
-                        "default": 1000,
+                        "default": 2000,
                         "min": 500,
                         "max": 120_000,
                         "step": 500
@@ -234,165 +245,267 @@ class CSMDialogRun:
                         "max": 1.0,
                         "step": 0.01
                     }),
-                    "topk": ("INT", {
+                    "top_k": ("INT", {
                         "default": 50,
                         "min": 1,
                         "max": 100,
                         "step": 1
                     }),
+                    "save_speakers": ("BOOLEAN", {"default": True}),
+                    "speakers_id": ("STRING", {"default": "A_and_B"}),
+                    "unload_model": ("BOOLEAN", {
+                            "default": True,
+                            "tooltip": "Unload model from memory after use"
+                    }),
+                },
+                "optional": {
                 }
         }
 
-
     CATEGORY = "🎤MW/MW-CSM"
-    RETURN_TYPES = ("AUDIO", "STRING")
-    RETURN_NAMES = ("audio", "prompt")
+    RETURN_TYPES = ("AUDIO",)
+    RETURN_NAMES = ("audio",)
     FUNCTION = "run"
 
-
     def run(self, 
+            model,
             text, 
-            unload_speakers, 
             unload_model, 
-            prompt0="", 
-            prompt1="", 
-            prompt2="", 
-            prompt3="", 
-            audio0=None, 
-            audio1=None, 
-            audio2=None, 
-            audio3=None, 
-            who_will_speak=1,
+            prompt, 
+            audio_s1,
+            audio_s2,
             max_audio_length_ms=90_000,
             temperature=0.9,
-            topk=50,
+            top_k=50,
+            save_speakers=True,
+            speakers_id="A_and_B",
             ):
-        """Main dialog generation pipeline
-        Args:
-            text: Input text to be synthesized
-            unload_speakers: Flag to clear speaker history
-            prompt0-3: Context prompts for dialogue generation
-            audio0-3: Reference audio clips for speaker style
-            who_will_speak: Selected speaker ID for synthesis
-        """
-        generator = Generator(self.load_csm_1b(), device=self.device)
-        global SEGMENTS, SPEAKERS
-        if unload_speakers:
-            SEGMENTS.clear()
-            SPEAKERS.clear()
-            
-        # Process context inputs
-        segments = []
-        for i in range(4):
-            prompt = locals()[f"prompt{i}"]
-            audio = locals()[f"audio{i}"]
-            # print(f"prompt{i}: {prompt}→audio{i}")
-            if audio is not None:
-                audio_tensor = audio["waveform"].squeeze(0).mean(dim=0)
-                sample_rate = int(audio["sample_rate"])
-                # print(f"audio{i} sample_rate: {sample_rate}")
-                audio_tensor = torchaudio.functional.resample(
-                                                            audio_tensor.squeeze(0), 
-                                                            orig_freq=sample_rate, 
-                                                            new_freq=generator.sample_rate
-                                                        )
-            else:
-                audio_tensor = None
-            
-            speaker, prompt = self.get_speaker_text(prompt)
 
-            segment = self.get_segment(speaker, prompt, audio_tensor)
-            if segment is not None:
-                SEGMENTS.append(segment)
-                SPEAKERS.append(speaker)
-        
-        if SEGMENTS:
-            # Generate with context
-            audio = generator.generate(
-                text=text,
-                speaker=who_will_speak,
-                context=SEGMENTS,
-                max_audio_length_ms=max_audio_length_ms,
-                temperature=temperature,
-                topk=topk,
-            )
-            out_prompt = f"{who_will_speak}: {text}"
-        else:
-            # Generate without context
-            audio = generator.generate(
-                text=text,
-                speaker=0,
-                context=[],
-                max_audio_length_ms=max_audio_length_ms,
-                temperature=temperature,
-                topk=topk,
-            )
-            out_prompt = f"0: {text}"
+        global MODEL_CACHE
+        if MODEL_CACHE is None:
+            csm_1b_path = os.path.join(models_dir, "TTS", "csm-1b")
+            config_path = os.path.join(csm_1b_path, "config.json")
+
+            with open(config_path, 'r', encoding="utf-8") as f:
+                config = json.load(f)
+            config_args = config["args"]
+            configs = ModelArgs(backbone_flavor = config_args["backbone_flavor"], 
+                                decoder_flavor = config_args["decoder_flavor"], 
+                                text_vocab_size = config_args["text_vocab_size"], 
+                                audio_vocab_size = config_args["audio_vocab_size"], 
+                                audio_num_codebooks = config_args["audio_num_codebooks"])
+
+            MODEL_CACHE = Model(configs)
+            safetensors_file_path = os.path.join(csm_1b_path, model)
+            state_dict = safetensors.torch.load_file(safetensors_file_path, device="cpu")
+            MODEL_CACHE.load_state_dict(state_dict)
+            MODEL_CACHE.to(device=self.device)
+            MODEL_CACHE.eval()
+
+        generator = Generator(MODEL_CACHE, device=self.device)
+        prompt = prompt.strip()
+        speakers, texts = self.get_speaker_text(text.strip())
+
+        if len(speakers) != len(texts):
+            raise ValueError("The number of speakers and texts in the prompt must be the same.")
 
         sr = generator.sample_rate
 
+        if not prompt:
+            raise ValueError("Prompt can't empty: [S1]... [S2]...")
+
+        p_speakers, p_texts = self.get_speaker_text(prompt)
+        if len(p_speakers) != len(p_texts):
+            raise ValueError("The number of speakers and texts in the prompt must be the same.")
+        if len(p_speakers) == 0:
+            raise ValueError("Prompt: [S1]... [S2]...")
+
+        segments = []
+        for s, t in zip(p_speakers, p_texts):
+            if s == 0:
+                segments.append(Segment(speaker=0, text=t, audio=self.get_audio_tensor(audio_s1, generator.sample_rate)))
+            elif s == 1:
+                segments.append(Segment(speaker=1, text=t, audio=self.get_audio_tensor(audio_s2, generator.sample_rate)))
+        
+        audio = generator.generate(
+            texts=texts,
+            speakers=speakers,
+            context=segments,
+            max_audio_length_ms=max_audio_length_ms,
+            temperature=temperature,
+            topk=top_k,
+        )
+            
+        if save_speakers:
+            if speakers_id.strip() == "":
+                raise ValueError("Speakers ID is empty.")
+
+            if not os.path.exists(speakers_dir):
+                os.makedirs(speakers_dir)
+
+            audio_s1_path = os.path.join(speakers_dir, f"{speakers_id}_1.wav")
+            torchaudio.save(audio_s1_path, audio_s1["waveform"].squeeze(0), audio_s1["sample_rate"])
+
+            audio_s2_path = os.path.join(speakers_dir, f"{speakers_id}_2.wav")
+            torchaudio.save(audio_s2_path, audio_s2["waveform"].squeeze(0), audio_s2["sample_rate"])
+
+            text_path = os.path.join(speakers_dir, f"{speakers_id}.txt")
+            
+            with open(text_path, "w", encoding="utf-8") as f:
+                f.write(prompt)
+
         if unload_model:
             generator.clean_memory()
-            del generator
+            generator = None
             MODEL_CACHE = None
             import gc
             gc.collect()
             torch.cuda.empty_cache()
-            
-        return ({"waveform": audio.unsqueeze(0).unsqueeze(0).cpu(), "sample_rate": sr}, out_prompt)
+
+        return ({"waveform": audio.unsqueeze(0).unsqueeze(0).cpu(), "sample_rate": sr},)
+
+    def get_audio_tensor(self, audio, sample_rate):
+        audio_tensor = audio["waveform"].squeeze(0).mean(dim=0)
+        orig_freq = int(audio["sample_rate"])
+
+        audio_tensor = torchaudio.functional.resample(
+                                                    audio_tensor.squeeze(0), 
+                                                    orig_freq=orig_freq, 
+                                                    new_freq=sample_rate
+                                                )
+        return audio_tensor
 
     def get_speaker_text(self, text):
         import re
-        if text.strip() != "":
-            st = [i.strip() for i in re.split('[:：]', text, 1)]
-            if len(st) == 2:
-                speaker, prompt = st
-                return int(speaker), prompt
-            else:
-                raise ValueError("Invalid text format")
-        else:
-            return None, None
+        
+        pattern = r'(\[s?S?1\]|\[s?S?2\])\s*(.*)'
+        matches = re.findall(pattern, text)
+        
+        labels = []
+        contents = []
+        
+        for label, content in matches:
+            labels.append(label)
+            contents.append(content)
+        
+        numeric_labels = [
+            0 if i.lower() == '[s1]' else 1 for i in labels
+        ]
+        
+        return (numeric_labels, contents)
     
-    def get_segment(self, speaker, text, audio):
-        if speaker is not None:
-            if audio is not None:
-                return Segment(speaker=speaker, text=text, audio=audio)
-            else:
-                raise ValueError(f"{text}: Audio is required")
+
+from typing import List, Optional, Union
+
+def get_all_files(
+    root_dir: str,
+    return_type: str = "list",
+    extensions: Optional[List[str]] = None,
+    exclude_dirs: Optional[List[str]] = None,
+    relative_path: bool = False
+) -> Union[List[str], dict]:
+    """
+    递归获取目录下所有文件路径
+    
+    :param root_dir: 要遍历的根目录
+    :param return_type: 返回类型 - "list"(列表) 或 "dict"(按目录分组)
+    :param extensions: 可选的文件扩展名过滤列表 (如 ['.py', '.txt'])
+    :param exclude_dirs: 要排除的目录名列表 (如 ['__pycache__', '.git'])
+    :param relative_path: 是否返回相对路径 (相对于root_dir)
+    :return: 文件路径列表或字典
+    """
+    file_paths = []
+    file_dict = {}
+    
+    # 规范化目录路径
+    root_dir = os.path.normpath(root_dir)
+    
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        # 处理排除目录
+        if exclude_dirs:
+            dirnames[:] = [d for d in dirnames if d not in exclude_dirs]
+        
+        current_files = []
+        for filename in filenames:
+            # 扩展名过滤
+            if extensions:
+                if not any(filename.lower().endswith(ext.lower()) for ext in extensions):
+                    continue
+            
+            # 构建完整路径
+            full_path = os.path.join(dirpath, filename)
+            
+            # 处理相对路径
+            if relative_path:
+                full_path = os.path.relpath(full_path, root_dir)
+            
+            current_files.append(full_path)
+        
+        if return_type == "dict":
+            # 使用相对路径或绝对路径作为键
+            dict_key = os.path.relpath(dirpath, root_dir) if relative_path else dirpath
+            if current_files:
+                file_dict[dict_key] = current_files
         else:
-            return None
+            file_paths.extend(current_files)
+    
+    return file_dict if return_type == "dict" else file_paths
 
-    def load_csm_1b(self):
-        global MODEL_CACHE
-        if MODEL_CACHE is not None:
-            return MODEL_CACHE
-        else:
-            csm_1b_path = os.path.join(models_dir, "TTS", "csm-1b")
-            config_path = os.path.join(csm_1b_path, "config.json")
-            import json
-            with open(config_path, 'r', encoding="utf-8") as f:
-                config = json.load(f)
-            config = config["args"]
-            configs = ModelArgs(backbone_flavor = config["backbone_flavor"], 
-                                decoder_flavor = config["decoder_flavor"], 
-                                text_vocab_size = config["text_vocab_size"], 
-                                audio_vocab_size = config["audio_vocab_size"], 
-                                audio_num_codebooks = config["audio_num_codebooks"])
-            MODEL_CACHE = Model.from_pretrained(csm_1b_path, config=configs)
-            MODEL_CACHE.to(device=self.device, dtype=torch.bfloat16)
 
-            return MODEL_CACHE
+def get_speakers():
+    if not os.path.exists(speakers_dir):
+        os.makedirs(speakers_dir, exist_ok=True)
+        return []
+    speakers = get_all_files(speakers_dir, extensions=[".txt"], relative_path=True)
+    return speakers
 
-from .MWAudioRecorderCSM import AudioRecorderCSM
+
+class CSMSpeakersPreview:
+    def __init__(self):
+        self.speakers_dir = speakers_dir
+    @classmethod
+    def INPUT_TYPES(s):
+        speakers = get_speakers()
+        return {
+            "required": {"speaker":(speakers,),},}
+
+    RETURN_TYPES = ("STRING", "AUDIO", "AUDIO",)
+    RETURN_NAMES = ("text", "audio_s1", "audio_s2",)
+    FUNCTION = "preview"
+    CATEGORY = "🎤MW/MW-CSM"
+
+    def preview(self, speaker):
+        text_path = os.path.join(self.speakers_dir, speaker)
+        with open(text_path, "r", encoding="utf-8") as f:
+            text = f.read()
+
+        audio_s1_path = text_path.replace(".txt", "_1.wav")
+        waveform, sample_rate = torchaudio.load(audio_s1_path)
+        waveform = waveform.unsqueeze(0)
+        output_audio_s1 = {
+            "waveform": waveform,
+            "sample_rate": sample_rate
+        }
+
+        audio_s2_path = text_path.replace(".txt", "_2.wav")
+        waveform, sample_rate = torchaudio.load(audio_s2_path)
+        waveform = waveform.unsqueeze(0)
+        output_audio_s2 = {
+            "waveform": waveform,
+            "sample_rate": sample_rate
+        }
+
+        return (text, output_audio_s1, output_audio_s2)
+
 
 NODE_CLASS_MAPPINGS = {
     "CSMDialogRun": CSMDialogRun,
+    "CSMSpeakersPreview": CSMSpeakersPreview,
     "MultiLinePromptCSM": MultiLinePromptCSM,
-    "AudioRecorderCSM": AudioRecorderCSM,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CSMDialogRun": "CSM Dialog Run",
+    "CSMSpeakersPreview": "Speakers Preview",
     "MultiLinePromptCSM": "Multi Line Prompt",
-    "AudioRecorderCSM": "MW Audio Recorder",
 }
