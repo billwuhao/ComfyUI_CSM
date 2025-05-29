@@ -189,7 +189,7 @@ class Generator:
         return final_audio
 
 
-class MultiLinePromptCSM:
+class MultiLineText:
     @classmethod
     def INPUT_TYPES(cls):
                
@@ -203,7 +203,7 @@ class MultiLinePromptCSM:
 
     CATEGORY = "🎤MW/MW-CSM"
     RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("prompt",)
+    RETURN_NAMES = ("text",)
     FUNCTION = "promptgen"
     
     def promptgen(self, multi_line_prompt: str):
@@ -470,7 +470,7 @@ class CSMSpeakersPreview:
             "required": {"speaker":(speakers,),},}
 
     RETURN_TYPES = ("STRING", "AUDIO", "AUDIO",)
-    RETURN_NAMES = ("text", "audio_s1", "audio_s2",)
+    RETURN_NAMES = ("prompt", "audio_s1", "audio_s2",)
     FUNCTION = "preview"
     CATEGORY = "🎤MW/MW-CSM"
 
@@ -501,11 +501,11 @@ class CSMSpeakersPreview:
 NODE_CLASS_MAPPINGS = {
     "CSMDialogRun": CSMDialogRun,
     "CSMSpeakersPreview": CSMSpeakersPreview,
-    "MultiLinePromptCSM": MultiLinePromptCSM,
+    "MultiLineText": MultiLineText,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CSMDialogRun": "CSM Dialog Run",
     "CSMSpeakersPreview": "Speakers Preview",
-    "MultiLinePromptCSM": "Multi Line Prompt",
+    "MultiLineText": "Multi Line Text",
 }
