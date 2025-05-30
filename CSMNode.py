@@ -214,6 +214,7 @@ MODEL_CACHE = None
 class CSMDialogRun:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model_name = None
 
     @classmethod
     def INPUT_TYPES(s):
@@ -282,7 +283,8 @@ class CSMDialogRun:
             ):
 
         global MODEL_CACHE
-        if MODEL_CACHE is None:
+        if MODEL_CACHE is None or self.model_name != model:
+            self.model_name = model
             csm_1b_path = os.path.join(models_dir, "TTS", "csm-1b")
             config_path = os.path.join(csm_1b_path, "config.json")
 
