@@ -380,7 +380,7 @@ class CSMDialogRun:
     def get_speaker_text(self, text):
         import re
         
-        pattern = r'(\[s?S?1\]|\[s?S?2\])\s*(.*)'
+        pattern = r'(\[s?S?1\]|\[s?S?2\])\s*([\s\S]*?)(?=\[s?S?[12]\]|$)'
         matches = re.findall(pattern, text)
         
         labels = []
